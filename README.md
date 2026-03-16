@@ -2,6 +2,8 @@
   <img src="./src/media/icon-256.png" alt="Oracipher Icon" width="128">
   <h1 style="border-bottom: none;">Oracipher Core v5.2</h1>
 
+> 本仓库始终处于alpha版本，如果存在任何的更新之后，本仓库会选择删除该句子，或者归档这个仓库
+
 # High-Security Hybrid Encryption Kernel Library
 
 | Build & Test | License | Language | Dependencies |
