@@ -6,6 +6,11 @@
 // This file provides the central entry points for cryptographic operations,
 // key management, stream processing, and secure memory handling.
 
+// Expose POSIX fdopen and related APIs in strict C11 mode.
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "hsc_kernel.h"
 
 #include <errno.h>
