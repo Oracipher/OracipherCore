@@ -1,0 +1,140 @@
+name: One-time verified legacy branch cleanup
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/one-time-legacy-branch-cleanup.yml
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  prune:
+    if: github.repository == 'Oracipher/OracipherCore' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete only verified redundant historical refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          OWNER_REPO = "Oracipher/OracipherCore"
+          EXPECTED = {
+            "Preversion/003": "e751ac468b7c20299e4ec04a5205f16abd919d98",
+            "Preversion/005": "b060503ea52387a9a6468e1a52c808a8036357ad",
+            "Preversion/006": "215fff32b48d2599e5b378f13e36e10eccd820f7",
+            "Preversion/007": "813caa34a6f7b7bb44c59ffd6bd0ef30199eee06",
+            "Preversion/008": "b4b5350620c8ce627d5ad12dd88ffc04daa2d426",
+            "Preversion/009": "667a1b0cb94f0353b82dcf52b9341e929bc65559",
+            "Preversion/010": "52888b4c3c7acfd07932fd384cc715668bd17fe0",
+            "Preversion/011": "5e4fa69131b4829d8492a57b000809c9768f22d6",
+            "Preversion/012": "a8c57c52b8aa22d81df29c4cb4c216906a03ca87",
+            "Preversion/013": "4e3efaa8da3772078535a547254d29a99e3ef6e3",
+            "Preversion/014": "6316a78ff84837dbc5e80f26fba69291a40ba8a8",
+            "Preversion/015": "9fe577de98f84fbbe91e653004a77e1a40a6d392",
+            "Preversion/016": "8e282161f6a0bd479fd83c3236e9ceeff1c435b5",
+            "Preversion/017": "f34394a8647cf9c129417493f98302d09e3f11df",
+            "Preversion/020": "6aa30cf1e8f8379de8c9340af7312ae83144e46c",
+            "Preversion/021": "e4e337f0d3a1f8b6e748e77f9b67633d853d6348",
+            "Preversion/022": "6b535a8efdc4f70b9e08e3a5e26fe7a4b84f433e",
+            "Preversion/023": "ea5f1f34466b6a34ee7e67e2648b5434b07c8668",
+            "Preversion/024": "eeeeff797b4f76f578b01d46841d113ee95974b7",
+            "Preversion/025": "bb126a0ea630f40d3cf12b7631a441667a9ab9fd",
+            "Preversion/026": "0695730d4f82f18cc298b94aca12d626313c23f4",
+            "Preversion/027": "9fb6d07c92649b50c97e548e6e990ae9c980bca8",
+            "Preversion/028": "a899d4eb03fdab911ceecbe0eb7f959cd7771678",
+            "Preversion/030": "1a5edc181f1cdfadf5607ffe9ff928174ffcc6a7",
+            "Preversion/031": "bd9d25bac62cd4526a18378f8799374546400d53",
+            "release/0.0.2": "a9125a1c1fdc3bb1433206079279a89c51d5483d"
+          }
+          PROTECTED = {
+              "main", "release/0.0.1",
+              "fix/preserve-existing-output-on-failure",
+              "fix/secure-pepper-powershell-example",
+          }
+
+          def api(method, path):
+              url = "https://api.github.com/repos/" + OWNER_REPO + "/" + path
+              req = urllib.request.Request(
+                  url, method=method,
+                  headers={
+                      "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "User-Agent": "oracipher-one-time-branch-cleanup",
+                  }
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as res:
+                      raw = res.read()
+                      return res.status, json.loads(raw) if raw else None
+              except urllib.error.HTTPError as exc:
+                  raw = exc.read().decode("utf-8", errors="replace")
+                  return exc.code, {"error": raw[:400]}
+
+          def active_pr_heads():
+              page = 1
+              active = set()
+              while True:
+                  status, result = api("GET", f"pulls?state=open&per_page=100&page={page}")
+                  if status != 200:
+                      raise RuntimeError(f"Unable to validate open PRs: {status}: {result}")
+                  for pr in result:
+                      if pr["head"]["repo"] and pr["head"]["repo"]["full_name"] == OWNER_REPO:
+                          active.add(pr["head"]["ref"])
+                  if len(result) < 100:
+                      return active
+                  page += 1
+
+          def main():
+              if os.environ.get("GITHUB_REPOSITORY") != OWNER_REPO or os.environ.get("GITHUB_REF") != "refs/heads/main":
+                  raise RuntimeError("Refusing to operate outside OracipherCore main")
+              active = active_pr_heads()
+              deleted, skipped, failures = [], [], []
+              print("Active PR branch names: " + ", ".join(sorted(active)))
+              for name, original_sha in EXPECTED.items():
+                  if name in PROTECTED or name in active:
+                      skipped.append((name, "protected or has an open PR"))
+                      continue
+                  encoded = urllib.parse.quote(name, safe="")
+                  status, branch = api("GET", f"branches/{encoded}")
+                  if status == 404:
+                      skipped.append((name, "already absent"))
+                      continue
+                  if status != 200:
+                      failures.append((name, f"branch query HTTP {status}"))
+                      continue
+                  if branch.get("protected") or branch.get("commit", {}).get("sha") != original_sha:
+                      skipped.append((name, "protected or branch SHA changed"))
+                      continue
+                  status, cmp = api("GET", f"compare/main...{encoded}")
+                  if status != 200 or cmp.get("ahead_by") != 0 or cmp.get("status") not in ("behind", "identical"):
+                      skipped.append((name, "not proven ancestor of main"))
+                      continue
+                  # Recheck the object immediately before deletion to minimize TOCTOU risk.
+                  status, current = api("GET", f"branches/{encoded}")
+                  if status != 200 or current.get("protected") or current.get("commit", {}).get("sha") != original_sha:
+                      skipped.append((name, "changed during review"))
+                      continue
+                  status, result = api("DELETE", f"git/refs/heads/{encoded}")
+                  if status == 204:
+                      print("DELETED " + name + " " + original_sha)
+                      deleted.append(name)
+                  else:
+                      print(f"FAILED delete {name}: HTTP {status}: {result}")
+                      failures.append((name, status))
+              print("SUMMARY deleted=" + str(len(deleted)) + " skipped=" + str(len(skipped)) + " failed=" + str(len(failures)))
+              for name, reason in skipped:
+                  print("SKIPPED " + name + ": " + reason)
+              if failures:
+                  sys.exit(1)
+          main()
+          PY
