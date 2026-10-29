@@ -1,3 +1,9 @@
+// Enable POSIX function declarations (unsetenv) under strict ISO C11.
+// Feature-test macros must precede all system headers.
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "crypto_client.h"
 #include "../common/secure_memory.h"
 #include "../common/internal_logger.h"
