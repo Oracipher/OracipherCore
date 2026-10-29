@@ -1,0 +1,57 @@
+name: One-time cleanup of merged documentation branch
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/one-time-doc-branch-cleanup.yml
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  delete-merged-doc-branch:
+    if: github.repository == 'Oracipher/OracipherCore' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify merged PR and delete its exact branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.parse, urllib.error
+          repo = "Oracipher/OracipherCore"
+          branch_name = "chore/repository-governance-baseline"
+          sha = "ad02d9e46d9116b15bda8df6f35221b2331bd84f"
+          def call(method, resource):
+              url = "https://api.github.com/repos/" + repo + "/" + resource
+              req = urllib.request.Request(url, method=method, headers={
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "User-Agent": "oracipher-merged-branch-pruner",
+              })
+              with urllib.request.urlopen(req, timeout=30) as result:
+                  raw = result.read()
+                  return result.status, json.loads(raw) if raw else None
+          if os.environ.get("GITHUB_REF") != "refs/heads/main" or os.environ.get("GITHUB_REPOSITORY") != repo:
+              raise RuntimeError("Refusing to run outside main")
+          _, pr = call("GET", "pulls/41")
+          if not (pr.get("merged") and pr.get("state") == "closed" and
+                  pr.get("base", {}).get("ref") == "main" and
+                  pr.get("head", {}).get("ref") == branch_name and
+                  pr.get("head", {}).get("sha") == sha):
+              raise RuntimeError("PR #41 merge state or head mismatch")
+          encoded = urllib.parse.quote(branch_name, safe="")
+          _, target = call("GET", "branches/" + encoded)
+          if target.get("protected") or target.get("commit", {}).get("sha") != sha:
+              raise RuntimeError("Branch changed or is protected")
+          _, comparison = call("GET", "compare/main..." + encoded)
+          if comparison.get("ahead_by") != 0:
+              raise RuntimeError("Branch contains commits not in main")
+          _, active_prs = call("GET", "pulls?state=open&per_page=100")
+          if any(p["head"]["ref"] == branch_name for p in active_prs):
+              raise RuntimeError("Branch still in use")
+          status, _ = call("DELETE", "git/refs/heads/" + encoded)
+          if status != 204:
+              raise RuntimeError("Branch deletion did not return HTTP 204")
+          print("DELETED " + branch_name + " " + sha)
+          PY
