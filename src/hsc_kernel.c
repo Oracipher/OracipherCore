@@ -676,6 +676,8 @@ int hsc_hybrid_encrypt_stream_raw(const char* output_path,
   int ret_code = HSC_ERROR_GENERAL;
   FILE* f_in = NULL;
   FILE* f_out = NULL;
+  // Only clean up files created by this invocation; never unlink an existing output.
+  bool output_created = false;
   hsc_crypto_stream_state* st = NULL;
   unsigned char* session_key = NULL;
   session_key = hsc_secure_alloc(HSC_SESSION_KEY_BYTES);
@@ -704,7 +706,8 @@ int hsc_hybrid_encrypt_stream_raw(const char* output_path,
   }
 
 #ifdef _WIN32
-  f_out = _fopen_exclusive_win32(output_path); 
+  f_out = _fopen_exclusive_win32(output_path);
+  if (f_out != NULL) output_created = true; 
 #else
   // Ensure O_EXCL is used here as well
   int fd_out = open(output_path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
@@ -717,6 +720,8 @@ int hsc_hybrid_encrypt_stream_raw(const char* output_path,
       ret_code = HSC_ERROR_FILE_IO;
       goto cleanup;
   }
+  // open(O_CREAT | O_EXCL) succeeded, even if fdopen later fails.
+  output_created = true;
   f_out = fdopen(fd_out, "wb");
 #endif
 
@@ -753,7 +758,7 @@ cleanup:
   if (f_in) fclose(f_in);
   if (f_out) fclose(f_out);
   // [NOTE]: If failed, we should try to remove the partial file
-  if (ret_code != HSC_OK && output_path != NULL) remove(output_path);
+  if (ret_code != HSC_OK && output_created) remove(output_path);
   hsc_crypto_stream_state_free(&st);
   hsc_secure_free(session_key);
   return ret_code;
@@ -770,6 +775,8 @@ int hsc_hybrid_decrypt_stream_raw(const char* output_path,
   int ret_code = HSC_ERROR_GENERAL;
   FILE* f_in = NULL;
   FILE* f_out = NULL;
+  // Only clean up files created by this invocation; never unlink an existing output.
+  bool output_created = false;
   hsc_crypto_stream_state* st = NULL;
   unsigned char* encapsulated_key = NULL;
   unsigned char* dec_session_key = NULL;
@@ -826,6 +833,7 @@ int hsc_hybrid_decrypt_stream_raw(const char* output_path,
 
 #ifdef _WIN32
   f_out = _fopen_exclusive_win32(output_path);
+  if (f_out != NULL) output_created = true;
 #else
   // Ensure O_EXCL is used here as well
   int fd_out = open(output_path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
@@ -838,6 +846,8 @@ int hsc_hybrid_decrypt_stream_raw(const char* output_path,
       ret_code = HSC_ERROR_FILE_IO;
       goto cleanup;
   }
+  // open(O_CREAT | O_EXCL) succeeded, even if fdopen later fails.
+  output_created = true;
   f_out = fdopen(fd_out, "wb");
 #endif
 
@@ -858,7 +868,7 @@ int hsc_hybrid_decrypt_stream_raw(const char* output_path,
 cleanup:
   if (f_in) fclose(f_in);
   if (f_out) fclose(f_out);
-  if (ret_code != HSC_OK && output_path != NULL) remove(output_path);
+  if (ret_code != HSC_OK && output_created) remove(output_path);
   hsc_secure_free(encapsulated_key);
   hsc_crypto_stream_state_free(&st);
   hsc_secure_free(dec_session_key);
