@@ -52,7 +52,9 @@
 // Stream Encryption (XChaCha20-Poly1305 SecretStream) Constants
 #define HSC_STREAM_HEADER_BYTES     24
 #define HSC_STREAM_TAG_BYTES        16
-#define HSC_STREAM_CHUNK_OVERHEAD   (HSC_STREAM_TAG_BYTES)
+// SecretStream serializes 1 encrypted tag byte in addition to its 16-byte MAC.
+// Must equal crypto_secretstream_xchacha20poly1305_ABYTES (17 bytes).
+#define HSC_STREAM_CHUNK_OVERHEAD   (HSC_STREAM_TAG_BYTES + 1)
 
 // Single-shot AEAD Encryption Constants
 #define HSC_AEAD_NONCE_BYTES        24
