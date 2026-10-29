@@ -6,6 +6,11 @@
 // This file provides the central entry points for cryptographic operations,
 // key management, stream processing, and secure memory handling.
 
+// Expose POSIX fdopen and related APIs in strict C11 mode.
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "hsc_kernel.h"
 
 #include <errno.h>
@@ -55,6 +60,9 @@ struct hsc_crypto_stream_state_s {
 const uint8_t HSC_STREAM_TAG_FINAL =
     crypto_secretstream_xchacha20poly1305_TAG_FINAL;
 
+_Static_assert(HSC_STREAM_CHUNK_OVERHEAD == crypto_secretstream_xchacha20poly1305_ABYTES,
+               "Stream chunk overhead must match libsodium SecretStream ABYTES");
+
 // --- Internal Helper Functions ---
 
 // Stores a 64-bit integer in little-endian format.
@@ -99,20 +107,27 @@ static int _perform_stream_encryption(FILE* f_in, FILE* f_out,
   unsigned long long out_len;
   uint8_t tag;
   int ret = HSC_OK;
+  bool wrote_chunk = false;
 
-  // 使用更安全的循环结构，避免 feof 的误用
   while ((bytes_read = fread(buf_in, 1, sizeof(buf_in), f_in)) > 0) {
     if (ferror(f_in)) {
       ret = HSC_ERROR_FILE_IO;
       goto cleanup;
     }
-    // 检查是否是最后一块
-    int c = fgetc(f_in);
+    // One-byte lookahead distinguishes the final chunk from preceding chunks.
+    const int c = fgetc(f_in);
     if (c == EOF) {
-        tag = HSC_STREAM_TAG_FINAL;
+      if (ferror(f_in)) {
+        ret = HSC_ERROR_FILE_IO;
+        goto cleanup;
+      }
+      tag = HSC_STREAM_TAG_FINAL;
     } else {
-        tag = 0;
-        ungetc(c, f_in);
+      if (ungetc(c, f_in) == EOF) {
+        ret = HSC_ERROR_FILE_IO;
+        goto cleanup;
+      }
+      tag = 0;
     }
 
     if (hsc_crypto_stream_push(st, buf_out, &out_len, buf_in, bytes_read,
@@ -120,16 +135,31 @@ static int _perform_stream_encryption(FILE* f_in, FILE* f_out,
       ret = HSC_ERROR_CRYPTO_OPERATION;
       goto cleanup;
     }
-    if (fwrite(buf_out, 1, out_len, f_out) != out_len) {
+    if (fwrite(buf_out, 1, (size_t)out_len, f_out) != (size_t)out_len) {
       ret = HSC_ERROR_FILE_IO;
       goto cleanup;
     }
+    wrote_chunk = true;
     if (tag == HSC_STREAM_TAG_FINAL) break;
   }
+  if (ferror(f_in)) {
+    ret = HSC_ERROR_FILE_IO;
+    goto cleanup;
+  }
 
+  // Even an empty input must contain an authenticated final stream message.
+  if (!wrote_chunk) {
+    if (hsc_crypto_stream_push(st, buf_out, &out_len, buf_in, 0,
+                               HSC_STREAM_TAG_FINAL) != HSC_OK) {
+      ret = HSC_ERROR_CRYPTO_OPERATION;
+      goto cleanup;
+    }
+    if (fwrite(buf_out, 1, (size_t)out_len, f_out) != (size_t)out_len) {
+      ret = HSC_ERROR_FILE_IO;
+      goto cleanup;
+    }
+  }
 cleanup:
-  // Securely wipe stack buffers before returning.
-  // This prevents plaintext fragments from remaining in stack memory.
   sodium_memzero(buf_in, sizeof(buf_in));
   sodium_memzero(buf_out, sizeof(buf_out));
   return ret;
@@ -168,6 +198,10 @@ static int _perform_stream_decryption(FILE* f_in, FILE* f_out,
       goto cleanup;
     }
     if (*stream_finished_flag) break;
+  }
+  if (ferror(f_in)) {
+    ret = HSC_ERROR_FILE_IO;
+    goto cleanup;
   }
 
 cleanup:
@@ -676,6 +710,8 @@ int hsc_hybrid_encrypt_stream_raw(const char* output_path,
   int ret_code = HSC_ERROR_GENERAL;
   FILE* f_in = NULL;
   FILE* f_out = NULL;
+  // Only clean up files created by this invocation; never unlink an existing output.
+  bool output_created = false;
   hsc_crypto_stream_state* st = NULL;
   unsigned char* session_key = NULL;
   session_key = hsc_secure_alloc(HSC_SESSION_KEY_BYTES);
@@ -704,7 +740,8 @@ int hsc_hybrid_encrypt_stream_raw(const char* output_path,
   }
 
 #ifdef _WIN32
-  f_out = _fopen_exclusive_win32(output_path); 
+  f_out = _fopen_exclusive_win32(output_path);
+  if (f_out != NULL) output_created = true; 
 #else
   // Ensure O_EXCL is used here as well
   int fd_out = open(output_path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
@@ -717,6 +754,8 @@ int hsc_hybrid_encrypt_stream_raw(const char* output_path,
       ret_code = HSC_ERROR_FILE_IO;
       goto cleanup;
   }
+  // open(O_CREAT | O_EXCL) succeeded, even if fdopen later fails.
+  output_created = true;
   f_out = fdopen(fd_out, "wb");
 #endif
 
@@ -753,7 +792,7 @@ cleanup:
   if (f_in) fclose(f_in);
   if (f_out) fclose(f_out);
   // [NOTE]: If failed, we should try to remove the partial file
-  if (ret_code != HSC_OK && output_path != NULL) remove(output_path);
+  if (ret_code != HSC_OK && output_created) remove(output_path);
   hsc_crypto_stream_state_free(&st);
   hsc_secure_free(session_key);
   return ret_code;
@@ -770,6 +809,8 @@ int hsc_hybrid_decrypt_stream_raw(const char* output_path,
   int ret_code = HSC_ERROR_GENERAL;
   FILE* f_in = NULL;
   FILE* f_out = NULL;
+  // Only clean up files created by this invocation; never unlink an existing output.
+  bool output_created = false;
   hsc_crypto_stream_state* st = NULL;
   unsigned char* encapsulated_key = NULL;
   unsigned char* dec_session_key = NULL;
@@ -826,6 +867,7 @@ int hsc_hybrid_decrypt_stream_raw(const char* output_path,
 
 #ifdef _WIN32
   f_out = _fopen_exclusive_win32(output_path);
+  if (f_out != NULL) output_created = true;
 #else
   // Ensure O_EXCL is used here as well
   int fd_out = open(output_path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
@@ -838,6 +880,8 @@ int hsc_hybrid_decrypt_stream_raw(const char* output_path,
       ret_code = HSC_ERROR_FILE_IO;
       goto cleanup;
   }
+  // open(O_CREAT | O_EXCL) succeeded, even if fdopen later fails.
+  output_created = true;
   f_out = fdopen(fd_out, "wb");
 #endif
 
@@ -858,7 +902,7 @@ int hsc_hybrid_decrypt_stream_raw(const char* output_path,
 cleanup:
   if (f_in) fclose(f_in);
   if (f_out) fclose(f_out);
-  if (ret_code != HSC_OK && output_path != NULL) remove(output_path);
+  if (ret_code != HSC_OK && output_created) remove(output_path);
   hsc_secure_free(encapsulated_key);
   hsc_crypto_stream_state_free(&st);
   hsc_secure_free(dec_session_key);

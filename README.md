@@ -8,7 +8,7 @@
 
 | Build & Test | License | Language | Dependencies |
 | :---: | :---: | :---: | :---: |
-| ![Build Status](https://img.shields.io/badge/tests-passing-brightgreen) | ![License](https://img.shields.io/badge/license-Dual--Licensed-blue) | ![Language](https://img.shields.io/badge/language-C11-purple) | ![Libsodium](https://img.shields.io/badge/libsodium-v1.0.18+-brightgreen) ![OpenSSL](https://img.shields.io/badge/OpenSSL-v3.0+-0075A8) ![Libcurl](https://img.shields.io/badge/libcurl-v7.68+-E5522D) |
+| ![Build Status](https://github.com/Oracipher/OracipherCore/actions/workflows/c-build-test.yml/badge.svg?branch=main) | ![License](https://img.shields.io/badge/license-Dual--Licensed-blue) | ![Language](https://img.shields.io/badge/language-C11-purple) | ![Libsodium](https://img.shields.io/badge/libsodium-v1.0.18+-brightgreen) ![OpenSSL](https://img.shields.io/badge/OpenSSL-v3.0+-0075A8) ![Libcurl](https://img.shields.io/badge/libcurl-v8.4.0+-E5522D) |
 
 </div>
 
@@ -116,7 +116,7 @@ The project uses a clean, layered directory structure to achieve separation of c
 *   **OpenSSL:** **v3.0** or newer is recommended (`libssl-dev`)
 *   **libcurl:** (`libcurl4-openssl-dev`)
 
-**Security Note on Dependencies:** The project's build system (`CMakeLists.txt`) will automatically check the versions of your installed dependencies and issue a **FATAL ERROR** if OpenSSL is older than v3.0, and a **SECURITY WARNING** if OpenSSL or Libcurl have known critical vulnerabilities (e.g., CVE-2023-38545 for Libcurl). **Always pay attention to these warnings and keep your system libraries up to date.**
+**Security Note on Dependencies:** The project's build system (`CMakeLists.txt`) will automatically check the versions of your installed dependencies and issue a **FATAL ERROR** if OpenSSL is older than v3.0 or libcurl is older than v8.4.0, and a **SECURITY WARNING** for OpenSSL versions older than v3.0.7 (e.g., CVE-2023-38545 for Libcurl). **Always pay attention to these warnings and keep your system libraries up to date.**
 
 ### 4.2 Critical Security Configuration: The Pepper
 

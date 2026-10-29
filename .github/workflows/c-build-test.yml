@@ -1,0 +1,59 @@
+name: C build and tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Ubuntu 24.04 / ${{ matrix.compiler }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config libsodium-dev libssl-dev libcurl4-openssl-dev
+      - name: Configure (C11)
+        env:
+          CC: ${{ matrix.compiler }}
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --parallel 1
+
+  sanitizer:
+    name: Ubuntu 24.04 / Clang ASan+UBSan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config clang libsodium-dev libssl-dev libcurl4-openssl-dev
+      - name: Configure with sanitizers
+        env:
+          CC: clang
+        run: >
+          cmake -S . -B build-sanitizer -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build with sanitizers
+        run: cmake --build build-sanitizer --parallel 2
+      - name: Run tests with sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-sanitizer --output-on-failure --parallel 1
