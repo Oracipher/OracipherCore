@@ -1,3 +1,8 @@
+// POSIX environment APIs require feature-test macros under strict ISO C11.
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
