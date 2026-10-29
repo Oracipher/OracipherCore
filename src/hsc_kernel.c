@@ -60,6 +60,9 @@ struct hsc_crypto_stream_state_s {
 const uint8_t HSC_STREAM_TAG_FINAL =
     crypto_secretstream_xchacha20poly1305_TAG_FINAL;
 
+_Static_assert(HSC_STREAM_CHUNK_OVERHEAD == crypto_secretstream_xchacha20poly1305_ABYTES,
+               "Stream chunk overhead must match libsodium SecretStream ABYTES");
+
 // --- Internal Helper Functions ---
 
 // Stores a 64-bit integer in little-endian format.
@@ -104,20 +107,27 @@ static int _perform_stream_encryption(FILE* f_in, FILE* f_out,
   unsigned long long out_len;
   uint8_t tag;
   int ret = HSC_OK;
+  bool wrote_chunk = false;
 
-  // 使用更安全的循环结构，避免 feof 的误用
   while ((bytes_read = fread(buf_in, 1, sizeof(buf_in), f_in)) > 0) {
     if (ferror(f_in)) {
       ret = HSC_ERROR_FILE_IO;
       goto cleanup;
     }
-    // 检查是否是最后一块
-    int c = fgetc(f_in);
+    // One-byte lookahead distinguishes the final chunk from preceding chunks.
+    const int c = fgetc(f_in);
     if (c == EOF) {
-        tag = HSC_STREAM_TAG_FINAL;
+      if (ferror(f_in)) {
+        ret = HSC_ERROR_FILE_IO;
+        goto cleanup;
+      }
+      tag = HSC_STREAM_TAG_FINAL;
     } else {
-        tag = 0;
-        ungetc(c, f_in);
+      if (ungetc(c, f_in) == EOF) {
+        ret = HSC_ERROR_FILE_IO;
+        goto cleanup;
+      }
+      tag = 0;
     }
 
     if (hsc_crypto_stream_push(st, buf_out, &out_len, buf_in, bytes_read,
@@ -125,16 +135,31 @@ static int _perform_stream_encryption(FILE* f_in, FILE* f_out,
       ret = HSC_ERROR_CRYPTO_OPERATION;
       goto cleanup;
     }
-    if (fwrite(buf_out, 1, out_len, f_out) != out_len) {
+    if (fwrite(buf_out, 1, (size_t)out_len, f_out) != (size_t)out_len) {
       ret = HSC_ERROR_FILE_IO;
       goto cleanup;
     }
+    wrote_chunk = true;
     if (tag == HSC_STREAM_TAG_FINAL) break;
   }
+  if (ferror(f_in)) {
+    ret = HSC_ERROR_FILE_IO;
+    goto cleanup;
+  }
 
+  // Even an empty input must contain an authenticated final stream message.
+  if (!wrote_chunk) {
+    if (hsc_crypto_stream_push(st, buf_out, &out_len, buf_in, 0,
+                               HSC_STREAM_TAG_FINAL) != HSC_OK) {
+      ret = HSC_ERROR_CRYPTO_OPERATION;
+      goto cleanup;
+    }
+    if (fwrite(buf_out, 1, (size_t)out_len, f_out) != (size_t)out_len) {
+      ret = HSC_ERROR_FILE_IO;
+      goto cleanup;
+    }
+  }
 cleanup:
-  // Securely wipe stack buffers before returning.
-  // This prevents plaintext fragments from remaining in stack memory.
   sodium_memzero(buf_in, sizeof(buf_in));
   sodium_memzero(buf_out, sizeof(buf_out));
   return ret;
@@ -173,6 +198,10 @@ static int _perform_stream_decryption(FILE* f_in, FILE* f_out,
       goto cleanup;
     }
     if (*stream_finished_flag) break;
+  }
+  if (ferror(f_in)) {
+    ret = HSC_ERROR_FILE_IO;
+    goto cleanup;
   }
 
 cleanup:
