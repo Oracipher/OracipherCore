@@ -29,7 +29,11 @@ The Pepper must be a **32-byte** high-entropy random number, represented as a **
 openssl rand -hex 32
 
 # Windows (PowerShell)
--join ((1..32) | ForEach-Object { "{0:x2}" -f (Get-Random -Min 0 -Max 256) })
+# Windows PowerShell 5.1 and PowerShell 7 compatible; use the OS CSPRNG.
+$bytes = New-Object byte[] 32
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+[System.BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
 ```
 
 *Example Output (For reference only, strictly prohibited for production use):*
